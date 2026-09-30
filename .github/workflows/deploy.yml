@@ -1,0 +1,55 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-api:
+    name: API → Cloud Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push API image
+        run: |
+          IMAGE=${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/brightedge/api
+          docker build -f Dockerfile.api -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          REDIS_URL="redis://:${{ secrets.REDIS_PASSWORD }}@${{ secrets.WORKER_VM_IP }}:6379"
+          RABBITMQ_URL="amqp://${{ secrets.RABBITMQ_USER }}:${{ secrets.RABBITMQ_PASS }}@${{ secrets.WORKER_VM_IP }}:5672/"
+          gcloud run deploy brightedge-api \
+            --image ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/brightedge/api:${{ github.sha }} \
+            --region ${{ secrets.GCP_REGION }} \
+            --platform managed \
+            --memory 512Mi \
+            --allow-unauthenticated \
+            --set-env-vars "REDIS_URL=${REDIS_URL},RABBITMQ_URL=${RABBITMQ_URL}" \
+            --quiet
+
+  deploy-worker:
+    name: Worker → VM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.WORKER_VM_IP }}
+          username: ${{ secrets.WORKER_VM_USER }}
+          key: ${{ secrets.WORKER_SSH_KEY }}
+          script: |
+            cd ~/brightedge
+            git pull https://oauth2:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git main
+            docker compose -f docker-compose.worker.yml up -d --build

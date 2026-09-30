@@ -1,0 +1,18 @@
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# Install Playwright system dependencies and Chromium in one layer to keep image lean
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install --with-deps chromium \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY config.py .
+COPY crawler/ crawler/
+COPY worker/ worker/
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "worker.main"]
